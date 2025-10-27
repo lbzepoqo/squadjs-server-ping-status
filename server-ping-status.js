@@ -26,23 +26,8 @@ export default class ServerPingStatus extends DiscordBaseMessageUpdater {
             },
             enablePingAlerts: {
                 required: false,
-                description: 'Enable Discord notifications when regional pings fail.',
-                default: false
-            },
-            pingAlertRoles: {
-                required: false,
-                description: 'Array of Discord role IDs to mention when pings fail.',
-                default: []
-            },
-            pingAlertUsers: {
-                required: false,
-                description: 'Array of Discord user IDs to mention when pings fail.',
-                default: []
-            },
-            pingAlertInterval: {
-                required: false,
-                description: 'Minimum seconds between ping alert notifications to prevent spam.',
-                default: 300
+                description: 'Enable visual alert styling in status message when regional pings fail.',
+                default: true
             },
             pingFailureThreshold: {
                 required: false,
@@ -51,7 +36,7 @@ export default class ServerPingStatus extends DiscordBaseMessageUpdater {
             },
             minFailedRegions: {
                 required: false,
-                description: 'Minimum number of regions that must fail to trigger an alert.',
+                description: 'Minimum number of regions that must fail to trigger visual alert.',
                 default: 3
             }
         };
@@ -62,11 +47,8 @@ export default class ServerPingStatus extends DiscordBaseMessageUpdater {
 
         this.updateMessages = this.updateMessages.bind(this);
         this.onServerInfoUpdated = this.onServerInfoUpdated.bind(this);
-        this.checkAndSendPingAlert = this.checkAndSendPingAlert.bind(this);
 
         this.serverInfo = null;
-        this.lastPingAlertTime = null;
-        this.lastFailedRegions = [];
     }
 
     async mount() {
@@ -91,9 +73,6 @@ export default class ServerPingStatus extends DiscordBaseMessageUpdater {
     async onServerInfoUpdated(data) {
         this.serverInfo = data.raw;
         // this.verbose(1, 'Server information updated', this.serverInfo);
-
-        // Check for ping failures and send alerts if configured
-        await this.checkAndSendPingAlert();
     }
 
     async generateMessage() {
@@ -101,19 +80,40 @@ export default class ServerPingStatus extends DiscordBaseMessageUpdater {
             return;
         }
 
-        const embed = {};
-
-        embed.title = `${this.serverInfo.ServerName_s} - Ping Information`;
-
-        embed.description = `**Game Mode:** ${this.serverInfo.GameMode_s}\n` +
-            `**Map:** ${this.serverInfo.MapName_s}\n` +
-            `**Players:** ${this.serverInfo.PlayerCount_I}/${this.serverInfo.MaxPlayers}`;
-
+        // Identify all regions with their ping values
         const regions = [
             'ap-east-1', 'ap-southeast-1', 'ap-southeast-2',
             'eu-central-1', 'eu-north-1', 'eu-west-2',
             'me-central-1', 'us-east-1', 'us-west-1'
         ];
+
+        // Find failed regions if alerts are enabled
+        let failedRegions = [];
+        let hasCriticalFailure = false;
+        if (this.options.enablePingAlerts) {
+            failedRegions = regions.filter(region => {
+                const ping = parseInt(this.serverInfo[`${region}_I`] || '0');
+                return ping >= this.options.pingFailureThreshold;
+            });
+            hasCriticalFailure = failedRegions.length >= this.options.minFailedRegions;
+        }
+
+        const embed = {};
+
+        embed.title = hasCriticalFailure
+            ? `⚠️ ${this.serverInfo.ServerName_s} - Ping Alert`
+            : `${this.serverInfo.ServerName_s} - Ping Information`;
+
+        let description = `**Game Mode:** ${this.serverInfo.GameMode_s}\n` +
+            `**Map:** ${this.serverInfo.MapName_s}\n` +
+            `**Players:** ${this.serverInfo.PlayerCount_I}/${this.serverInfo.MaxPlayers}`;
+
+        // Add alert warning if critical failure detected
+        if (hasCriticalFailure) {
+            description += `\n\n🚨 **ALERT: ${failedRegions.length}/${regions.length} regions are unreachable!**`;
+        }
+
+        embed.description = description;
 
         const sortedRegions = [ ...regions ].sort((a, b) => {
             const aValue = parseInt(this.serverInfo[ `${a}_I` ] || '999');
@@ -195,153 +195,26 @@ export default class ServerPingStatus extends DiscordBaseMessageUpdater {
 
         embed.description += `\n\n${footerInfo}`;
 
-        const playerPercentage = this.serverInfo.PlayerCount_I / this.serverInfo.MaxPlayers;
-        embed.color = (
-            parseInt(
-                tinygradient([
-                    { color: '#ff0000', pos: 0 },
-                    { color: '#ffff00', pos: 0.3 },
-                    { color: '#00ff00', pos: 0.6 },
-                    { color: '#0000ff', pos: 1 }
-                ])
-                    .rgbAt(Math.min(1, playerPercentage))
-                    .toHex(),
-                16
-            )
-        );
+        // Set color: red if critical failure, otherwise based on player count
+        if (hasCriticalFailure) {
+            embed.color = 0xff6b6b; // Red for alert
+        } else {
+            const playerPercentage = this.serverInfo.PlayerCount_I / this.serverInfo.MaxPlayers;
+            embed.color = (
+                parseInt(
+                    tinygradient([
+                        { color: '#ff0000', pos: 0 },
+                        { color: '#ffff00', pos: 0.3 },
+                        { color: '#00ff00', pos: 0.6 },
+                        { color: '#0000ff', pos: 1 }
+                    ])
+                        .rgbAt(Math.min(1, playerPercentage))
+                        .toHex(),
+                    16
+                )
+            );
+        }
 
         return { embeds: [ embed ] };
-    }
-
-    async checkAndSendPingAlert() {
-        // Exit early if alerts are disabled
-        if (!this.options.enablePingAlerts) {
-            return;
-        }
-
-        // Exit if no roles or users configured to ping
-        if (this.options.pingAlertRoles.length === 0 && this.options.pingAlertUsers.length === 0) {
-            this.verbose(1, 'Ping alerts enabled but no roles or users configured');
-            return;
-        }
-
-        // Exit if no server info available
-        if (!this.serverInfo) {
-            return;
-        }
-
-        // Identify all regions with their ping values
-        const regions = [
-            'ap-east-1', 'ap-southeast-1', 'ap-southeast-2',
-            'eu-central-1', 'eu-north-1', 'eu-west-2',
-            'me-central-1', 'us-east-1', 'us-west-1'
-        ];
-
-        // Find failed regions
-        const failedRegions = regions.filter(region => {
-            const ping = parseInt(this.serverInfo[`${region}_I`] || '0');
-            return ping >= this.options.pingFailureThreshold;
-        });
-
-        // Exit if not enough regions failed
-        if (failedRegions.length < this.options.minFailedRegions) {
-            // Reset state if situation improved
-            if (this.lastFailedRegions.length >= this.options.minFailedRegions) {
-                this.verbose(1, `Ping situation improved: ${failedRegions.length}/${regions.length} regions failing`);
-                this.lastFailedRegions = failedRegions;
-            }
-            return;
-        }
-
-        // Time-gate throttling to prevent spam
-        const now = Date.now();
-        const alertIntervalMs = this.options.pingAlertInterval * 1000;
-        const shouldAlert = !this.lastPingAlertTime ||
-            now - this.lastPingAlertTime >= alertIntervalMs;
-
-        if (!shouldAlert) {
-            const nextAlertIn = Math.ceil(
-                (alertIntervalMs - (now - this.lastPingAlertTime)) / 1000
-            );
-            this.verbose(1, `Ping alert throttled (next alert in ${nextAlertIn}s)`);
-            return;
-        }
-
-        // Check if this is a new failure or ongoing
-        const isNewFailure = this.lastFailedRegions.length < this.options.minFailedRegions;
-
-        // Build mention string
-        const mentions = [];
-        this.options.pingAlertRoles.forEach(roleId => mentions.push(`<@&${roleId}>`));
-        this.options.pingAlertUsers.forEach(userId => mentions.push(`<@${userId}>`));
-        const mentionString = mentions.join(' ');
-
-        // Build region list for message
-        const regionLabels = failedRegions.map(region => {
-            if (region.startsWith('eu-')) {
-                const regionPart = region.split('-')[1];
-                return `EU ${regionPart.charAt(0).toUpperCase() + regionPart.slice(1)}`;
-            }
-            else if (region.startsWith('us-')) {
-                const regionPart = region.split('-')[1];
-                return `US ${regionPart.charAt(0).toUpperCase() + regionPart.slice(1)}`;
-            }
-            else if (region.startsWith('ap-east')) {
-                return 'AP East';
-            }
-            else if (region.startsWith('ap-southeast')) {
-                return `AP Southeast ${region.charAt(region.length - 1)}`;
-            }
-            else if (region.startsWith('me-')) {
-                const regionPart = region.split('-')[1];
-                return `ME ${regionPart.charAt(0).toUpperCase() + regionPart.slice(1)}`;
-            }
-            return region;
-        });
-
-        // Create alert embed
-        const embed = {
-            title: `⚠️ Regional Ping ${isNewFailure ? 'Failure' : 'Alert'}`,
-            description: `**Server:** ${this.serverInfo.ServerName_s || 'Unknown'}\n\n` +
-                `${failedRegions.length}/${regions.length} regions are showing failed pings:\n` +
-                regionLabels.map(label => `• ${label}`).join('\n'),
-            color: 0xff6b6b, // Red color for alert
-            timestamp: new Date().toISOString(),
-            footer: {
-                text: `This alert is rate-limited to once every ${this.options.pingAlertInterval} seconds`
-            }
-        };
-
-        // Send notification to all subscribed channels
-        try {
-            const discord = this.options.discordClient;
-            if (!discord) {
-                this.verbose(1, 'Discord client not available for ping alerts');
-                return;
-            }
-
-            const messages = await this.SubscribedMessage.findAll();
-            for (const message of messages) {
-                try {
-                    const channel = await discord.channels.fetch(message.channelID);
-                    if (channel) {
-                        await channel.send({
-                            content: mentionString,
-                            embeds: [embed]
-                        });
-                        this.verbose(1, `Sent ping alert to channel ${message.channelID}`);
-                    }
-                } catch (error) {
-                    this.verbose(1, `Failed to send ping alert to channel ${message.channelID}:`, error.message);
-                }
-            }
-
-            // Update state
-            this.lastPingAlertTime = now;
-            this.lastFailedRegions = failedRegions;
-
-        } catch (error) {
-            this.verbose(1, 'Error sending ping alerts:', error.message);
-        }
     }
 }
