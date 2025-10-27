@@ -29,6 +29,16 @@ export default class ServerPingStatus extends DiscordBaseMessageUpdater {
                 description: 'Enable visual alert styling in status message when regional pings fail.',
                 default: true
             },
+            pingAlertRoles: {
+                required: false,
+                description: 'Array of Discord role IDs to mention in the status message when pings fail.',
+                default: []
+            },
+            pingAlertUsers: {
+                required: false,
+                description: 'Array of Discord user IDs to mention in the status message when pings fail.',
+                default: []
+            },
             pingFailureThreshold: {
                 required: false,
                 description: 'Ping value that indicates a regional ping failure.',
@@ -215,6 +225,15 @@ export default class ServerPingStatus extends DiscordBaseMessageUpdater {
             );
         }
 
-        return { embeds: [ embed ] };
+        // Build mention string if critical failure and mentions configured
+        let content = '';
+        if (hasCriticalFailure && (this.options.pingAlertRoles.length > 0 || this.options.pingAlertUsers.length > 0)) {
+            const mentions = [];
+            this.options.pingAlertRoles.forEach(roleId => mentions.push(`<@&${roleId}>`));
+            this.options.pingAlertUsers.forEach(userId => mentions.push(`<@${userId}>`));
+            content = mentions.join(' ');
+        }
+
+        return { content, embeds: [ embed ] };
     }
 }
